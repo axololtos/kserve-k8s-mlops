@@ -6,7 +6,7 @@ spec:
   predictor:
     containers:
     - name: kserve-container
-      image: axololtos/predictor-model:1.0
+      image: axololtos/predictor-model:2.4
       ports:
       - containerPort: 8080
         protocol: TCP

@@ -1,75 +1,95 @@
-# 🚀 Real-World ML Model Deployment with KServe on Kubernetes
+# Serving an ML Model on Kubernetes with KServe
 
-This repository provides a practical, hands-on guide to transitioning from a "trained model sitting in a notebook" to a **production-grade online inference endpoint** running on a Kubernetes cluster. 
+A small, working example of taking a scikit-learn model (`model/model.pkl`) from a file on disk to an HTTP inference endpoint on Kubernetes. The same Flask container is deployed two ways: as a plain Kubernetes `Deployment` + `Service`, and as a KServe `InferenceService`.
 
-Instead of focusing on theory, this project documents the actual "heavy lifting" involved in MLOps: wiring storage, configuring the KServe control plane, exposing scalable endpoints, and handling live inference requests.
+## How it works
 
----
-
-## 🏗️ The Architecture
-
-The implementation focuses on the practical path of model serving, moving beyond local testing to a resilient K8s-hosted environment.
-
-
-
-### Key Components:
-* **Model Serving:** KServe (InferenceService) for high-level abstraction.
-* **Orchestration:** Kubernetes (K8s) for container management.
-* **Inference Pipeline:** Integration with S3/GCS/PVC for model artifact storage.
-* **Networking:** Clean HTTP endpoints ready for live predictions.
-
----
-
-## 🛠️ What’s Inside this Repository
-
-### 🔹 KServe in the ML Stack
-A breakdown of why KServe is the preferred choice for model serving on Kubernetes, focusing on its ability to handle autoscaling (including scale-to-zero) and health checking out of the box.
-
-### 🔹 The High-Level Flow
-Documentation on the end-to-end lifecycle:
-1. **Storage:** Staging the model in a Cloud Storage bucket or Persistent Volume Claim (PVC).
-2. **Manifests:** Configuring the `InferenceService` without getting lost in "YAML hell."
-3. **Exposure:** Mapping the service to a reachable HTTP endpoint.
-
-### 🔹 Practical Lessons & Pitfalls
-Real-world insights gained from moving from a "local notebook" to "K8s-hosted." This includes:
-* Handling authentication between KServe and storage providers.
-* Resource limits and request/limit tuning for ML workloads.
-* Debugging common `Predictor` and `Transformer` container errors.
-
----
-
-## 📂 Project Structure
-
-```bash
-├── manifests/          # KServe InferenceService & ConfigMaps
-├── src/                # Sample model artifacts and preprocessing scripts
-├── tests/              # Python scripts for sending live inference requests
-└── README.md           # Documentation
+```
+model/model.pkl ──► Flask app (app.py) ──► Docker image ──┬─► Deployment + LoadBalancer Service
+                                                           └─► KServe InferenceService
 ```
 
-## 🚀 Getting Started
+`job.yaml` shows a third pattern: a one-off Job that copies the model out of an image into a PersistentVolumeClaim, so a model can be staged in storage separately from the serving image.
 
-* **Prerequisites:** A running K8s cluster with KServe, Knative, and Istio installed.
-* **Model Setup:** Ensure your model is saved in a supported format (e.g., `.pkl`, `.onnx`, or `SavedModel`).
-* **Deploy:**
-    ```bash
-    kubectl apply -f manifests/inference-service.yaml
-    ```
-* **Predict:** Use the scripts in `/tests` to send a JSON payload to your new endpoint.
+## Repository layout
 
----
+| File | Purpose |
+|------|---------|
+| `app.py` | Flask server that loads `model/model.pkl` with joblib and exposes `/health` and `/predict` on port 8080 |
+| `model/model.pkl` | The trained scikit-learn model |
+| `Dockerfile` | Builds the serving image (`python:3.9-slim`, Flask, scikit-learn, joblib, numpy) |
+| `deployment.yaml` | Plain Kubernetes `Deployment` (1 replica) and `LoadBalancer` `Service` (80 → 8080) |
+| `inference.yaml` | KServe `InferenceService` running the same container |
+| `job.yaml` | `PersistentVolumeClaim` (5Gi) and a Job that copies the model into it |
 
-## 💡 Why This Project?
+All three workloads request 500m CPU / 1Gi memory and are limited to 1 CPU / 2Gi.
 
-As someone who has managed infrastructure handling over **3 million web requests** and **91k Compute Engine units**, I know that the hardest part of AI isn't training the model—it's keeping it alive and scalable in production. This repo is designed for MLOps Engineers, DevOps Professionals, and Architects looking to productionize their AI workflows.
+## API
 
----
+### `GET /health`
+```json
+{"status": "healthy", "model_loaded": true}
+```
 
-## 👨‍💻 About the Author
+### `POST /predict`
+Send either `text` (a string or list of strings) or `features` (a flat list of numbers).
 
-**Google Cloud Innovator | Solution Architect**
+```bash
+curl -X POST http://<host>/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "this product is great"}'
 
-I have spent over 2 years leading high-impact technical communities, specifically as a **Cluster Coordinator for the Microsoft Club**, and architecting cloud solutions for startups. My experience bridges the gap between raw code and scalable, cloud-native infrastructure, with a focus on solving the "scale-up" problems that students and early-stage startups often face.
+curl -X POST http://<host>/predict \
+  -H "Content-Type: application/json" \
+  -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+```
 
-**Interested in MLOps or Cloud Architecture? Let's connect!**
+Response: `{"prediction": [...]}`. A missing body or missing `text`/`features` returns `400`; a model that failed to load returns `500`.
+
+## Run locally
+
+```bash
+pip install flask==3.1.1 scikit-learn==1.7.0 joblib==1.5.1 numpy==2.2.6
+python app.py            # http://localhost:8080
+```
+
+## Build and push the image
+
+```bash
+docker build -t <your-dockerhub-user>/predictor-model:2.4 .
+docker push <your-dockerhub-user>/predictor-model:2.4
+```
+
+## Deploy
+
+**Prerequisite:** a Kubernetes cluster. KServe (with Knative and Istio) is only needed for the `InferenceService` option.
+
+Plain Kubernetes:
+```bash
+kubectl apply -f deployment.yaml
+kubectl get svc predictor-model-service      # wait for EXTERNAL-IP
+```
+
+KServe:
+```bash
+kubectl apply -f inference.yaml
+kubectl get inferenceservice predictor-model
+```
+
+Stage the model into a PVC (optional):
+```bash
+kubectl apply -f job.yaml
+kubectl logs job/predictor-model-copy-job
+```
+
+## Notes
+
+- The image runs under gunicorn; set `FLASK_DEBUG=1` only when running `python app.py` locally.
+- Dependencies are pinned. `scikit-learn==1.7.0` matches the version that produced `model.pkl`; keep them in sync if you retrain.
+- All manifests reference `axololtos/predictor-model:2.4`. Build and push that tag (see above) before deploying.
+- `inference.yaml` uses a custom container, so it does not use KServe's v1/v2 inference protocol.
+- The `job.yaml` PVC is not mounted by the serving workloads yet.
+
+## Author
+
+Built by [axololtos](https://github.com/axololtos).

@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify
+import os
+
 import joblib
 import numpy as np
 
@@ -39,7 +41,7 @@ def predict():
             try:
                 features = np.array(data["features"], dtype=np.float64).reshape(1, -1)
                 prediction = model.predict(features)
-            except:
+            except (ValueError, TypeError):
                 # If numerical fails, try as text
                 features = data["features"]
                 if isinstance(features, list) and len(features) > 0:
@@ -65,8 +67,8 @@ def predict():
         
         return {"prediction": result}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()}, 400
+        app.logger.exception("prediction failed")
+        return {"error": str(e)}, 400
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    app.run(host="0.0.0.0", port=8080, debug=os.environ.get("FLASK_DEBUG") == "1")

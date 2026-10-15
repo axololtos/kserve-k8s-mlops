@@ -21,7 +21,7 @@ spec:
       restartPolicy: OnFailure
       containers:
       - name: model-writer
-        image: devopscube/predictor-model:1.0
+        image: axololtos/predictor-model:2.4
         command: [ "/bin/sh", "-c" ]
         args:
         - |
